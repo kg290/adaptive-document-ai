@@ -148,7 +148,7 @@ class AdaptiveKeyPool:
                 requests_ok = stats['requests_made'] < self.rpm_limit
 
                 if tokens_ok and requests_ok:
-                    load_score = stats[token_field] / tmp_limit + stats['requests_made'] / self.rpm_limit
+                    load_score = stats[token_field] / tpm_limit + stats['requests_made'] / self.rpm_limit
                     available_keys.append((key, load_score))
 
             if available_keys:
