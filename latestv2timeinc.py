@@ -229,12 +229,12 @@ class AdaptiveKeyPool:
 
 # Initialize with all 6 keys
 groq_keys = [
-    "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",
-    "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",
-    "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",
-    "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",
-    "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",
-    "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"
+    "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",
+    "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",
+    "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",
+    "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",
+    "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",
+    "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"
 ]
 
 groq_pool = AdaptiveKeyPool(groq_keys, primary_tpm=30000, fallback_tpm=10000, rpm_limit=30)
