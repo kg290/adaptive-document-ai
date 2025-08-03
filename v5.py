@@ -125,11 +125,20 @@ class AdaptiveKeyPool:
         self.fallback_model_used = 0
         self.current_key_index = 0
 
+
+
     def reset_counters_if_needed(self, key):
-        """Reset counters every minute"""
+        """Reset counters every minute and handle cooldown properly"""
         now = time.time()
         stats = self.key_stats[key]
 
+        # ALWAYS check cooldown first, regardless of minute reset
+        if stats['is_cooling'] and now >= stats['cooldown_until']:
+            stats['is_cooling'] = False
+            stats['consecutive_fails'] = 0
+            logger.info(f"[Jay121305] Key ...{key[-5:]} cooled down and ready")
+
+        # Reset counters every minute
         if now - stats['last_reset'] >= 60:
             stats['primary_tokens_used'] = 0
             stats['fallback_tokens_used'] = 0
@@ -137,13 +146,8 @@ class AdaptiveKeyPool:
             stats['last_reset'] = now
             logger.info(f"[Jay121305] Key ...{key[-5:]} tokens reset for new minute")
 
-        if stats['is_cooling'] and now >= stats['cooldown_until']:
-            stats['is_cooling'] = False
-            stats['consecutive_fails'] = 0
-            logger.info(f"[Jay121305] Key ...{key[-5:]} cooled down and ready")
-
     def get_adaptive_key(self, estimated_tokens=1000, use_fallback=False, is_complex=False):
-        """Robust adaptive key selection with better cooldown handling and load balancing"""
+        """Robust adaptive key selection with auto-unstick for submission"""
         with self.lock:
             tpm_limit = self.fallback_tpm if use_fallback else self.primary_tpm
             token_field = 'fallback_tokens_used' if use_fallback else 'primary_tokens_used'
@@ -152,13 +156,28 @@ class AdaptiveKeyPool:
             if is_complex:
                 estimated_tokens = int(estimated_tokens * 1.3)
 
-            usage_limit = 0.85 if not is_complex else 0.75  # Conservative cap for complex queries
+            usage_limit = 0.85 if not is_complex else 0.75
 
-            # 🔁 Ensure cooldown and usage counters are reset for ALL keys
+            # 🔁 Reset counters for ALL keys
             for key in self.keys:
                 self.reset_counters_if_needed(key)
 
-            # ⚖️ Build list of all usable keys with load score
+            # 🚨 AUTO-UNSTICK: Force recovery if too many keys are stuck
+            stuck_keys = sum(1 for key in self.keys if self.key_stats[key]['is_cooling'])
+            if stuck_keys >= len(self.keys) - 1:  # If 5+ out of 6 keys stuck
+                logger.warning(f"[Jay121305] AUTO-UNSTICK: {stuck_keys}/{len(self.keys)} keys stuck, forcing recovery")
+                now = time.time()
+                for key in self.keys:
+                    stats = self.key_stats[key]
+                    if stats['is_cooling']:
+                        # Auto-unstick if stuck for more than 30 seconds
+                        if now - (stats.get('cooldown_until', now) - 25) > 30:
+                            stats['is_cooling'] = False
+                            stats['consecutive_fails'] = 0
+                            stats['cooldown_until'] = 0
+                            logger.warning(f"[Jay121305] AUTO-UNSTUCK key ...{key[-5:]}")
+
+            # ⚖️ Build list of usable keys
             usable_keys = []
             for key in self.keys:
                 stats = self.key_stats[key]
@@ -172,27 +191,25 @@ class AdaptiveKeyPool:
                     load_score = (stats[token_field] / tpm_limit) + (stats['requests_made'] / self.rpm_limit)
                     usable_keys.append((key, load_score))
 
-            # ✅ If usable keys exist, choose the least loaded one
+            # ✅ If usable keys exist, use least loaded
             if usable_keys:
-                usable_keys.sort(key=lambda x: x[1])  # lowest load_score first
+                usable_keys.sort(key=lambda x: x[1])
                 selected_key = usable_keys[0][0]
-                model_name = "Kimi-K2" if use_fallback else "Llama-4-Scout"
-                logger.debug(f"[Jay121305] Selected key ...{selected_key[-5:]} for {model_name}")
                 return selected_key
 
-            # 🔄 All keys are overloaded or cooling — determine soonest available
-            soonest_key = min(self.keys, key=lambda k: self.key_stats[k]['last_reset'] + 60)
-            wait_time = max(0, self.key_stats[soonest_key]['last_reset'] + 60 - time.time())
-            max_wait = 15 if is_complex else 10
+            # 🔄 EMERGENCY: If still no keys, force unstick ALL and retry ONCE
+            logger.error(f"[Jay121305] EMERGENCY: All keys unavailable, forcing system recovery")
+            for key in self.keys:
+                stats = self.key_stats[key]
+                stats['is_cooling'] = False
+                stats['consecutive_fails'] = 0
+                stats['cooldown_until'] = 0
+                # Reset usage to allow immediate use
+                stats[token_field] = 0
+                stats['requests_made'] = 0
 
-            model_name = "Kimi-K2" if use_fallback else "Llama-4-Scout"
-            logger.warning(f"[Jay121305] All keys at {model_name} limit, waiting {wait_time:.1f}s...")
-
-            if wait_time > 0:
-                time.sleep(min(wait_time, max_wait))
-                return self.get_adaptive_key(estimated_tokens, use_fallback, is_complex)
-
-            return soonest_key  # fallback to soonest-reset key
+            # Return first key after emergency recovery
+            return self.keys[0]
 
     def record_success(self, key, tokens_used, response_time, use_fallback=False, was_complex=False):
         """Record successful API call with timing and complexity tracking"""
@@ -255,12 +272,12 @@ class AdaptiveKeyPool:
 
 # Initialize with all 6 keys
 groq_keys = [
-    "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",
-    "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",
-    "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",
-    "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",
-    "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",
-    "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"
+    os.getenv("GROQ_API_KEY_1"),
+    os.getenv("GROQ_API_KEY_2"),
+    os.getenv("GROQ_API_KEY_3"),
+    os.getenv("GROQ_API_KEY_4"),
+    os.getenv("GROQ_API_KEY_5"),
+    os.getenv("GROQ_API_KEY_6")
 ]
 
 groq_pool = AdaptiveKeyPool(groq_keys, primary_tpm=30000, fallback_tpm=10000, rpm_limit=30)
@@ -1010,7 +1027,7 @@ class AdaptiveRetriever:
         start_time = time.time()
 
         # Adjust chunk count based on complexity
-        chunk_count = 20 if is_complex else 18
+        chunk_count = 16 if is_complex else 14
         relevant_chunks = multi_strategy_search(query, self.chunks, top_k=chunk_count)
 
         # Soft fallback if too few relevant chunks
@@ -1049,7 +1066,7 @@ class AdaptiveRetriever:
         # Build adaptive context with complexity-based limits
         context_parts = []
         total_chars = 0
-        max_context = 9500 if is_complex else 8500  # More context for complex queries
+        max_context = 8000 if is_complex else 7500  # More context for complex queries
         chunks_used = 0
 
         for i, chunk in enumerate(relevant_chunks):
