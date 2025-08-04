@@ -173,7 +173,7 @@ openrouter_keys = [
   os.getenv("OPEN_API_KEY_4"),
   os.getenv("OPEN_API_KEY_5"),
   os.getenv("OPEN_API_KEY_6"),
-  os.getenv("OPEN_API_KEY_"),
+  os.getenv("OPEN_API_KEY_")
 ]
 
 openrouter_pool = AdaptiveKeyPool(openrouter_keys)
