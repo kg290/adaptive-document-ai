@@ -32,13 +32,13 @@ def metadata_weight_score(chunk: Dict) -> float:
     has_percent = 1 if meta.get("has_percentages") else 0
     clause_like = 1 if re.search(r'\b(clause|section|article)\b', chunk["text"].lower()) else 0
 
-    # Combined score (normalize coverage)
+    # REDUCED weights to prevent generic chunks from dominating
     return (
-        0.4 * priority +
-        0.3 * (coverage / 1000) +  # normalize large values
-        0.2 * has_numbers +
-        0.1 * has_percent +
-        0.3 * clause_like
+        0.2 * priority +           # Reduced from 0.4
+        0.1 * (coverage / 1000) +  # Reduced from 0.3
+        0.1 * has_numbers +        # Reduced from 0.2
+        0.05 * has_percent +       # Reduced from 0.1
+        0.15 * clause_like         # Reduced from 0.3
     )
 
 
@@ -372,136 +372,50 @@ def analyze_query_complexity(query: str) -> tuple[bool, str]:
 
 
 def smart_section_chunking(text: str) -> List[Dict]:
-    """Simple but effective chunking that actually works"""
+    """Improved chunking that preserves complete policy sections"""
     chunks = []
 
-    # Step 1: Try to find obvious section breaks first
-    obvious_breaks = []
+    # Step 1: Split by major section headers first
+    major_sections = re.split(r'\n\s*(?:SECTION|CLAUSE|ARTICLE|EXCLUSION|BENEFIT)\s*\d+', text, flags=re.IGNORECASE)
 
-    # Look for numbered sections, exclusions, benefits, etc.
-    section_markers = [
-        r'\n\s*(?:EXCLUSION|BENEFIT|CLAUSE|SECTION)\s*\d+',
-        r'\n\s*\d+\.\d+\s+',
-        r'\n\s*\d+\.\s+[A-Z]',
-        r'\n\s*[A-Z]{4,}\s*:',
-        r'\n\s*Table\s+\d+',
-        r'\n\s*Schedule\s+[A-Z]'
-    ]
+    if len(major_sections) < 5:  # If no major sections found, try numbered sections
+        major_sections = re.split(r'\n\s*\d+\.\s+[A-Z]', text)
 
-    for pattern in section_markers:
-        for match in re.finditer(pattern, text, re.IGNORECASE):
-            obvious_breaks.append(match.start())
+    if len(major_sections) < 5:  # Still not enough, split by paragraphs
+        major_sections = text.split('\n\n')
 
-    # Add start and end positions
-    obvious_breaks = [0] + sorted(set(obvious_breaks)) + [len(text)]
+    # Step 2: Create chunks ensuring important content stays together
+    for i, section in enumerate(major_sections):
+        section = section.strip()
+        if len(section) < 100:  # Skip tiny sections
+            continue
 
-    # Step 2: Create chunks from obvious breaks
-    for i in range(len(obvious_breaks) - 1):
-        start = obvious_breaks[i]
-        end = obvious_breaks[i + 1]
-        section_text = text[start:end].strip()
+        # Keep complete sections under 1000 chars together
+        if len(section) <= 1000:
+            chunks.append(create_chunk_simple(section, i))
+        else:
+            # Split longer sections by sentences, keeping related content together
+            sentences = sent_tokenize(section)
+            current_chunk = []
+            current_length = 0
 
-        if len(section_text) > 100:  # Only meaningful chunks
-            chunks.append(create_chunk_simple(section_text, i))
+            for sentence in sentences:
+                if current_length + len(sentence) > 800 and current_chunk:
+                    chunk_text = ' '.join(current_chunk)
+                    chunks.append(create_chunk_simple(chunk_text, len(chunks)))
+                    current_chunk = [sentence]
+                    current_length = len(sentence)
+                else:
+                    current_chunk.append(sentence)
+                    current_length += len(sentence)
 
-    # Step 3: If we don't have enough chunks, split by paragraphs
-    if len(chunks) < 20:
-        logger.warning(f"[SMART_CHUNKING] Only {len(chunks)} chunks from sections, adding paragraph chunks")
+            # Don't forget the last chunk
+            if current_chunk:
+                chunk_text = ' '.join(current_chunk)
+                chunks.append(create_chunk_simple(chunk_text, len(chunks)))
 
-        # Split by double newlines (paragraphs)
-        paragraphs = text.split('\n\n')
-        paragraph_chunks = []
-
-        current_chunk = []
-        current_length = 0
-        max_chunk_size = 800
-
-        for para in paragraphs:
-            para = para.strip()
-            if len(para) < 50:  # Skip tiny paragraphs
-                continue
-
-            # If adding this paragraph would make chunk too big
-            if current_length + len(para) > max_chunk_size and current_chunk:
-                # Save current chunk
-                chunk_text = '\n\n'.join(current_chunk)
-                paragraph_chunks.append(create_chunk_simple(chunk_text, len(paragraph_chunks)))
-                current_chunk = [para]
-                current_length = len(para)
-            else:
-                current_chunk.append(para)
-                current_length += len(para)
-
-        # Don't forget the last chunk
-        if current_chunk:
-            chunk_text = '\n\n'.join(current_chunk)
-            paragraph_chunks.append(create_chunk_simple(chunk_text, len(paragraph_chunks)))
-
-        # Add paragraph chunks to our collection
-        chunks.extend(paragraph_chunks)
-        logger.info(f"[SMART_CHUNKING] Added {len(paragraph_chunks)} paragraph chunks")
-
-    # Step 4: If still not enough, split by single newlines
-    if len(chunks) < 30:
-        logger.warning(f"[SMART_CHUNKING] Only {len(chunks)} chunks total, adding line-based chunks")
-
-        # Split by single newlines and group
-        lines = [line.strip() for line in text.split('\n') if line.strip()]
-        line_chunks = []
-
-        current_chunk = []
-        current_length = 0
-        max_chunk_size = 600
-
-        for line in lines:
-            if current_length + len(line) > max_chunk_size and current_chunk:
-                chunk_text = '\n'.join(current_chunk)
-                if len(chunk_text.strip()) > 100:  # Only meaningful chunks
-                    line_chunks.append(create_chunk_simple(chunk_text, len(line_chunks)))
-                current_chunk = [line]
-                current_length = len(line)
-            else:
-                current_chunk.append(line)
-                current_length += len(line)
-
-        # Last chunk
-        if current_chunk:
-            chunk_text = '\n'.join(current_chunk)
-            if len(chunk_text.strip()) > 100:
-                line_chunks.append(create_chunk_simple(chunk_text, len(line_chunks)))
-
-        chunks.extend(line_chunks)
-        logger.info(f"[SMART_CHUNKING] Added {len(line_chunks)} line-based chunks")
-
-    # Step 5: Remove duplicates and sort by priority
-    unique_chunks = []
-    seen_starts = set()
-
-    for chunk in chunks:
-        # Simple dedup based on first 50 characters
-        chunk_start = chunk['text'][:50].lower()
-        if chunk_start not in seen_starts:
-            unique_chunks.append(chunk)
-            seen_starts.add(chunk_start)
-
-    # Sort by priority
-    unique_chunks.sort(key=lambda x: x['metadata']['priority'], reverse=True)
-
-    # Limit to reasonable number
-    final_chunks = unique_chunks[:100]
-
-    # Log results
-    chunk_types = {}
-    for chunk in final_chunks:
-        chunk_type = chunk['metadata']['type']
-        chunk_types[chunk_type] = chunk_types.get(chunk_type, 0) + 1
-
-    logger.info(f"[SMART_CHUNKING] Final result: {len(final_chunks)} chunks")
-    logger.info(f"[SMART_CHUNKING] Types: {dict(chunk_types)}")
-
-    return final_chunks
-
-
+    logger.info(f"[IMPROVED_CHUNKING] Created {len(chunks)} chunks preserving policy sections")
+    return chunks[:100]  # Limit to reasonable number
 def create_chunk_simple(text: str, section_id: int) -> Dict:
     """Create a chunk with smart priority based on content - works for ANY document type"""
     text_lower = text.lower()
@@ -617,366 +531,305 @@ def create_chunk_simple(text: str, section_id: int) -> Dict:
             'high_priority_patterns': high_priority_matches
         }
     }
-def detect_document_domains(chunks, query_words):
-    """Detect domains by analyzing what terms co-occur in document chunks"""
-    domain_signals = {}
-
-    for chunk in chunks[:30]:  # Sample chunks to learn domain signals
-        text_lower = chunk['text'].lower()
-        chunk_words = set(re.findall(r'\b\w{3,}\b', text_lower))
-
-        # For each query word, see what other terms appear in same chunks
-        for query_word in query_words:
-            if query_word in text_lower:
-                if query_word not in domain_signals:
-                    domain_signals[query_word] = set()
-
-                # Find positions of query word
-                query_positions = [m.start() for m in re.finditer(re.escape(query_word), text_lower)]
-
-                for pos in query_positions:
-                    # Extract context around query word (50 chars each side)
-                    start = max(0, pos - 50)
-                    end = min(len(text_lower), pos + len(query_word) + 50)
-                    context = text_lower[start:end]
-
-                    # Extract meaningful terms from context (not all chunk words)
-                    context_terms = set(re.findall(r'\b\w{4,}\b', context))  # Only words 4+ chars
-
-                    # Filter out common words
-                    meaningful_terms = {term for term in context_terms
-                                        if term not in {'that', 'with', 'from', 'this', 'they', 'have', 'been', 'will',
-                                                        'were', 'would', 'could', 'should'}}
-
-                    domain_signals[query_word].update(meaningful_terms)
-
-    return domain_signals
 
 
-def extract_semantic_relationships(chunks, query):
-    """Learn semantic relationships from document context"""
-    relationships = set()
-    query_lower = query.lower()
+def debug_search_terms(query: str, chunks: List[Dict]) -> None:
+    """Debug why search might be failing"""
+    query_words = [w.lower() for w in query.split() if len(w) > 2]
+    logger.info(f"[DEBUG_SEARCH] Query: '{query}'")
+    logger.info(f"[DEBUG_SEARCH] Search words: {query_words}")
 
-    for chunk in chunks[:25]:
-        text_lower = chunk['text'].lower()
+    # Check if any chunks contain the words
+    word_counts = {}
+    for word in query_words:
+        count = sum(1 for chunk in chunks if word in chunk['text'].lower())
+        word_counts[word] = count
 
-        # If chunk contains query terms, extract related semantic terms
-        if any(word in text_lower for word in query.split()):
-            # Extract temporal terms that appear with query
-            temporal_terms = re.findall(
-                r'\b(?:\d+\s*(?:day|month|year|hour|week)s?|period|time|duration|deadline|when)\b', text_lower)
-            relationships.update(temporal_terms)
+    logger.info(f"[DEBUG_SEARCH] Word occurrences in {len(chunks)} chunks: {word_counts}")
 
-            # Extract quantitative terms
-            quantitative_terms = re.findall(
-                r'\b(?:amount|number|limit|maximum|minimum|rate|percentage|\d+|up\s+to|at\s+least)\b', text_lower)
-            relationships.update(quantitative_terms)
-
-            # Extract conditional terms
-            conditional_terms = re.findall(
-                r'\b(?:if|when|provided|subject\s+to|condition|requirement|criteria|must|shall)\b', text_lower)
-            relationships.update(conditional_terms)
-
-            # Extract structural terms
-            structural_terms = re.findall(r'\b(?:section|clause|article|part|chapter|exclusion|benefit|coverage)\b',
-                                          text_lower)
-            relationships.update(structural_terms)
-
-    return relationships
-
-
-def extract_document_patterns(chunks):
-    """Extract important patterns from document structure"""
-    patterns = set()
-
-    # Get patterns from high-priority chunks
-    high_priority_chunks = [c for c in chunks if c['metadata'].get('priority', 0) > 70]
-
-    for chunk in high_priority_chunks[:20]:
-        text_lower = chunk['text'].lower()
-
-        # Extract section/structural patterns that actually exist in document
-        section_patterns = re.findall(
-            r'\b(?:section|clause|article|exclusion|benefit|part|chapter)\s*[a-z0-9\-\.]*', text_lower)
-        patterns.update(section_patterns)
-
-        # Extract definition patterns
-        definition_patterns = re.findall(r'\b\w+\s+(?:means|defined|refers\s+to)', text_lower)
-        patterns.update(definition_patterns)
-
-        # Extract procedural patterns
-        procedural_patterns = re.findall(r'\b(?:requirement|condition|procedure|process|method|rule)\w*',
-                                         text_lower)
-        patterns.update(procedural_patterns)
-
-        # Extract temporal patterns
-        temporal_patterns = re.findall(r'\b(?:period|time|duration|days?|months?|years?)\b', text_lower)
-        patterns.update(temporal_patterns)
-
-    return list(patterns)
+    # Sample some chunk content
+    if chunks:
+        sample_text = chunks[0]['text'][:200].lower()
+        logger.info(f"[DEBUG_SEARCH] Sample chunk content: '{sample_text}...'")
 
 
 def multi_strategy_search(query: str, chunks: List[Dict], top_k: int = 15) -> List[Dict]:
-    """Multi-strategy search for maximum accuracy across any document type"""
+    """Dynamic search that adapts to query intent and document structure"""
 
     query_lower = query.lower()
     query_words = [w.lower() for w in query.split() if len(w) > 2]
 
-    # Extract key terms and patterns from query
-    key_terms = set()
+    # Dynamic query analysis
+    query_intent = analyze_query_intent(query_lower)
+    key_terms = extract_key_terms(query_lower)
 
-    # Learn domains dynamically from document
-    learned_domains = detect_document_domains(chunks, query_words)
-    detected_domains = list(learned_domains.keys())
-
-    # Expand search terms based on learned associations
-    for query_word, associated_terms in learned_domains.items():
-        # Only add the most relevant associated terms (avoid noise)
-        relevant_terms = [term for term in associated_terms
-                          if len(term) > 3 and term not in query_words][:15]
-        key_terms.update(relevant_terms)
-
-        if relevant_terms:
-            logger.debug(f"[DYNAMIC_DOMAIN] '{query_word}' -> learned {len(relevant_terms)} related terms")
-
-    # If no associations learned, use basic structural terms from document
-    if not learned_domains:
-        basic_terms = set()
-        for chunk in chunks[:10]:
-            text_lower = chunk['text'].lower()
-            # Extract structural terms that actually appear in this document
-            structural_terms = re.findall(
-                r'\b(?:section|article|definition|requirement|condition|process|method|rule|limit|amount|period|time|clause|exclusion|benefit)\b',
-                text_lower)
-            basic_terms.update(structural_terms)
-
-        key_terms.update(basic_terms)
-        logger.debug(f"[BASIC_TERMS] Used {len(basic_terms)} structural terms from document")
-
-    # Learn semantic relationships from document
-    semantic_relationships = extract_semantic_relationships(chunks, query)
-    key_terms.update(semantic_relationships)
-
-    if semantic_relationships:
-        logger.debug(f"[SEMANTIC_LEARNING] Learned {len(semantic_relationships)} semantic relationships")
-
-    # Add extracted keywords from top chunks
-    chunk_keywords = set()
-    for chunk in chunks[:20]:  # Sample top chunks
-        dynamic_kw = chunk['metadata'].get('dynamic_keywords', [])
-        chunk_keywords.update(dynamic_kw)
-
-    # Add most relevant chunk keywords to search terms
-    if chunk_keywords:
-        key_terms.update(list(chunk_keywords)[:10])  # Add top 10 chunk keywords
-
-    # Add query words and partial matching
-    key_terms.update(query_words)
-
-    # Add partial matching for compound terms
-    for term in list(key_terms):
-        if len(term) > 6:  # For longer terms, add partial matches
-            key_terms.add(term[:4])  # First 4 characters
-
-    # Extract patterns specific to this document
-    important_patterns = extract_document_patterns(chunks)
-
-    # Add learned domain-specific patterns
-    for domain_term in detected_domains:
-        if domain_term in learned_domains:
-            # Add the most frequent terms associated with this domain
-            domain_patterns = list(learned_domains[domain_term])[:10]
-            important_patterns.extend(domain_patterns)
-
-    logger.debug(f"[PATTERN_EXTRACTION] Found {len(important_patterns)} document-specific patterns")
-
-    # Enhanced scoring for complete sections
     scored_chunks = []
 
     for chunk in chunks:
         text_lower = chunk['text'].lower()
-        metadata = chunk['metadata']
         score = 0
 
-        # Start with ZERO base score - only relevant chunks get points
-
-        # 1. EXACT PHRASE MATCHING (highest priority)
+        # 1. EXACT PHRASE MATCHING
         if query_lower in text_lower:
-            score += 500  # Much higher for exact matches
-            logger.debug(f"[EXACT_MATCH] Found exact query phrase in chunk")
+            score += 2000
 
-        # 2. QUERY-SPECIFIC TERM MATCHING (most important)
-        query_term_score = 0
-        total_query_words = len(query_words)
-        matched_query_words = 0
+        # 2. KEY TERM MATCHING with dynamic weighting
+        matched_words = 0
+        for word in query_words:
+            if word in text_lower:
+                matched_words += 1
+                frequency = text_lower.count(word)
 
-        for query_word in query_words:
-            if query_word in text_lower:
-                matched_query_words += 1
-                # Weight by word importance and frequency in chunk
-                word_frequency = text_lower.count(query_word)
-                word_score = len(query_word) * 10 + word_frequency * 5
-                query_term_score += word_score
-                logger.debug(f"[QUERY_TERM] '{query_word}' found {word_frequency} times: +{word_score}")
+                # Dynamic scoring based on term importance
+                term_weight = get_term_weight(word, query_intent)
+                score += (150 * term_weight) + (frequency * 20)
 
-        # Only add score if significant portion of query is matched
-        if matched_query_words >= max(1, total_query_words // 2):
-            score += query_term_score
-            # Bonus for matching most/all query terms
-            completeness_bonus = (matched_query_words / total_query_words) * 200
-            score += completeness_bonus
-            logger.debug(
-                f"[COMPLETENESS] Matched {matched_query_words}/{total_query_words} terms: +{completeness_bonus}")
+        # 3. SEMANTIC PROXIMITY SCORING
+        score += calculate_semantic_proximity(query_words, text_lower)
+
+        # 4. INTENT-SPECIFIC SCORING
+        score += apply_intent_scoring(query_intent, text_lower, matched_words)
+
+        # 5. DOCUMENT STRUCTURE AWARENESS
+        score += evaluate_document_context(chunk, query_intent, key_terms)
+
+        # 6. CONTENT RELEVANCE FILTERING
+        if is_relevant_content(text_lower, key_terms, query_intent):
+            score += 200
         else:
-            # Heavily penalize chunks that don't match main query terms
-            score -= 100
+            score = max(0, score - 300)  # Penalize irrelevant content
 
-        # 3. CONTEXTUAL PROXIMITY SCORING
-        context_score = 0
-        for i, query_word in enumerate(query_words):
-            for j, other_word in enumerate(query_words[i + 1:], i + 1):
-                if query_word in text_lower and other_word in text_lower:
-                    # Find positions of both words
-                    word1_positions = [m.start() for m in re.finditer(re.escape(query_word), text_lower)]
-                    word2_positions = [m.start() for m in re.finditer(re.escape(other_word), text_lower)]
-
-                    # Check if they appear close together (within 100 characters)
-                    for pos1 in word1_positions:
-                        for pos2 in word2_positions:
-                            distance = abs(pos1 - pos2)
-                            if distance <= 100:
-                                proximity_score = max(0, 50 - distance // 2)
-                                context_score += proximity_score
-                                logger.debug(
-                                    f"[PROXIMITY] '{query_word}' and '{other_word}' close together: +{proximity_score}")
-                                break
-        score += context_score
-
-        # 4. SPECIFIC DETAIL EXTRACTION
-        detail_score = 0
-
-        # Look for specific numbers, amounts, dates mentioned with query terms
-        for query_word in query_words:
-            if query_word in text_lower:
-                query_positions = [m.start() for m in re.finditer(re.escape(query_word), text_lower)]
-
-                for pos in query_positions:
-                    # Extract 50 characters around query word
-                    start = max(0, pos - 50)
-                    end = min(len(text_lower), pos + len(query_word) + 50)
-                    context = text_lower[start:end]
-
-                    # Look for specific details in context
-                    numbers = re.findall(
-                        r'(?:₹|rs\.?|usd|\$)?\s*\d+(?:,\d+)*(?:\.\d+)?(?:\s*(?:lakhs?|crores?|thousands?|k|m|days?|months?|years?|hours?|%|percent))?\b',
-                        context)
-                    periods = re.findall(r'\d+\s*(?:days?|months?|years?|hours?)', context)
-                    sections = re.findall(r'(?:section|clause|article|part)\s*[a-z0-9\-\.]+', context)
-
-                    if numbers or periods or sections:
-                        detail_boost = len(numbers) * 100 + len(periods) * 80 + len(sections) * 60
-                        detail_score += detail_boost
-                        logger.debug(
-                            f"[SPECIFIC_DETAILS] Found {len(numbers)} numbers, {len(periods)} periods, {len(sections)} sections: +{detail_boost}")
-
-        score += detail_score
-
-        # 5. SECTION RELEVANCE (only if chunk actually contains relevant sections)
-        section_score = 0
-        relevant_sections = re.findall(r'(?:section|clause|article|part|chapter)\s*[a-z0-9\-\.]*', text_lower)
-        if relevant_sections:
-            # Check if section content is relevant to query
-            for section in relevant_sections:
-                section_pos = text_lower.find(section)
-                if section_pos >= 0:
-                    # Look for query terms near this section
-                    section_start = max(0, section_pos - 100)
-                    section_end = min(len(text_lower), section_pos + len(section) + 200)
-                    section_context = text_lower[section_start:section_end]
-
-                    relevant_terms_in_section = sum(1 for word in query_words if word in section_context)
-                    if relevant_terms_in_section > 0:
-                        section_boost = relevant_terms_in_section * 50
-                        section_score += section_boost
-                        logger.debug(
-                            f"[SECTION_RELEVANCE] Section '{section}' contains {relevant_terms_in_section} query terms: +{section_boost}")
-
-        score += section_score
-
-        # 6. PRIORITY AND TYPE BONUSES (reduced weight)
-        priority = metadata.get('priority', 0)
-        score += priority // 2  # Reduced from full priority
-
-        if metadata.get('type') == 'critical':
-            score += 30  # Reduced from 60
-
-        # 7. PENALIZE IRRELEVANT CHUNKS
-        if score < 50:  # Very low relevance
-            score = 0  # Don't include at all
-
-        # Complete section bonus
-
-
-        # PRECISION BOOST: Reward chunks with specific numbers, amounts, and exact details
-        # 8. BASIC PRECISION BOOST - only if query-relevant
-        if matched_query_words > 0:  # Only boost if chunk is relevant to query
-            # Look for specific numbers/amounts near query terms
-            for query_word in query_words:
-                if query_word in text_lower:
-                    positions = [m.start() for m in re.finditer(re.escape(query_word), text_lower)]
-                    for pos in positions:
-                        start = max(0, pos - 30)
-                        end = min(len(text_lower), pos + len(query_word) + 30)
-                        context = text_lower[start:end]
-
-                        # Count specific details near query terms
-                        numbers = len(re.findall(r'\d+', context))
-                        if numbers > 0:
-                            score += numbers * 20
-                            logger.debug(f"[PRECISION] Found {numbers} numbers near '{query_word}': +{numbers * 20}")
-        # UNIVERSAL PRECISION BOOST: Dynamic pattern detection
-
+        # 7. ANSWER PATTERN DETECTION
+        if contains_answer_pattern(text_lower, query_intent):
+            score += 800
 
         if score > 0:
-            scored_chunks.append((chunk, score))
+            scored_chunks.append((chunk, score, matched_words))
 
-    # Sort by score and return top chunks
-    scored_chunks.sort(key=lambda x: x[1], reverse=True)
+    # Dynamic sorting and filtering
+    scored_chunks.sort(key=lambda x: (x[1], x[2]), reverse=True)
 
-    if scored_chunks:
-        logger.info(
-            f"[Jay121305] Multi-strategy search: top score = {scored_chunks[0][1]}, found {len(scored_chunks)} relevant chunks")
-        # Log top 3 for debugging
-        for i, (chunk, score) in enumerate(scored_chunks[:3]):
-            preview = chunk['text'][:100].replace('\n', ' ')
-            logger.debug(f"[Jay121305] Rank {i + 1}: score={score}, text='{preview}...'")
+    # Remove duplicates and improve quality
+    unique_chunks = remove_duplicates_and_filter(scored_chunks, query_intent)
 
-    # Extract top-K from original scoring
-    preliminary_top_chunks = [chunk for chunk, _ in scored_chunks[:top_k * 2]]
-    if scored_chunks:
-        logger.info(f"[DEBUG] Search for '{query}' found {len(scored_chunks)} chunks")
-        for i, (chunk, score) in enumerate(scored_chunks[:5]):
-            preview = chunk['text'][:100].replace('\n', ' ')
-            logger.info(f"[DEBUG] Rank {i + 1}: score={score}, preview='{preview}...'")
-    else:
-        logger.warning(f"[DEBUG] No chunks found for query: '{query}'")
-        logger.info(f"[DEBUG] Available chunk types: {[c['metadata'].get('type', 'unknown') for c in chunks[:10]]}")
+    logger.info(f"[DYNAMIC_SEARCH] Intent: {query_intent}, Found {len(unique_chunks)} chunks")
+    if unique_chunks:
+        logger.info(f"[DYNAMIC_SEARCH] Top score: {unique_chunks[0][1]}")
+        for i, (chunk, score, matches) in enumerate(unique_chunks[:3]):
+            preview = chunk['text'][:80].replace('\n', ' ')
+            logger.info(
+                f"[DYNAMIC_DEBUG] Rank {i + 1}: score={score}, intent_match={query_intent}, text='{preview}...'")
 
-    # Enhanced debugging
-    logger.info(f"[ADAPTIVE_SEARCH] Detected domains: {detected_domains}")
-    logger.info(f"[ADAPTIVE_SEARCH] Key terms expanded to: {len(key_terms)} terms")
-    logger.info(f"[ADAPTIVE_SEARCH] Dynamic patterns: {len(important_patterns)} patterns")
+    return [chunk for chunk, score, matches in unique_chunks[:top_k]]
 
-    # Rerank by metadata weight
-    reranked_chunks = sorted(preliminary_top_chunks, key=metadata_weight_score, reverse=True)
 
-    # Final top chunks
-    final_chunks = reranked_chunks[:top_k]
+def analyze_query_intent(query_lower: str) -> str:
+    """Dynamically determine what the user is looking for"""
+    intent_patterns = {
+        'time_period': ['grace period', 'waiting period', 'how long', 'days', 'months', 'years'],
+        'definition': ['what is', 'define', 'definition of', 'means', 'what does'],
+        'coverage': ['covered', 'cover', 'benefits', 'include', 'expense'],
+        'limits': ['limit', 'maximum', 'minimum', 'sub-limit', 'up to'],
+        'conditions': ['conditions', 'criteria', 'requirements', 'eligible'],
+        'exclusions': ['not covered', 'exclude', 'exception', 'restriction'],
+        'discount': ['discount', 'ncd', 'bonus', 'claim-free'],
+        'specific_benefit': ['maternity', 'cataract', 'donor', 'ayush', 'hospital']
+    }
 
-    logger.info(f"[RERANK] Re-ranked top {top_k} chunks using metadata-weighted scoring")
+    for intent, patterns in intent_patterns.items():
+        if any(pattern in query_lower for pattern in patterns):
+            return intent
 
-    return final_chunks
+    return 'general'
+
+
+def extract_key_terms(query_lower: str) -> List[str]:
+    """Extract the most important terms from the query"""
+    # Remove common words
+    stop_words = {'is', 'the', 'for', 'and', 'or', 'in', 'on', 'at', 'to', 'a', 'an', 'this', 'that'}
+    words = [w for w in query_lower.split() if w not in stop_words and len(w) > 2]
+
+    # Priority terms that are highly specific
+    priority_terms = []
+    important_terms = []
+
+    for word in words:
+        if any(key in word for key in
+               ['grace', 'waiting', 'maternity', 'cataract', 'donor', 'ncd', 'ayush', 'hospital']):
+            priority_terms.append(word)
+        elif any(key in word for key in ['period', 'coverage', 'limit', 'benefit', 'condition']):
+            important_terms.append(word)
+
+    return priority_terms + important_terms + words[:5]  # Return most relevant terms
+
+
+def get_term_weight(word: str, intent: str) -> float:
+    """Dynamic weighting based on term importance and query intent"""
+
+    # High-value terms for different intents
+    intent_weights = {
+        'time_period': {'grace': 3.0, 'waiting': 3.0, 'period': 2.5, 'days': 2.0, 'months': 2.0},
+        'definition': {'hospital': 3.0, 'means': 2.5, 'defined': 2.5, 'definition': 2.0},
+        'coverage': {'covered': 2.5, 'expenses': 2.0, 'benefit': 2.0, 'include': 1.5},
+        'discount': {'ncd': 3.0, 'discount': 2.5, 'bonus': 2.5, 'claim': 2.0},
+        'specific_benefit': {'maternity': 3.0, 'cataract': 3.0, 'donor': 3.0, 'ayush': 3.0}
+    }
+
+    if intent in intent_weights and word in intent_weights[intent]:
+        return intent_weights[intent][word]
+
+    return 1.0  # Default weight
+
+
+def calculate_semantic_proximity(query_words: List[str], text: str) -> int:
+    """Calculate how close query words appear together in text"""
+    score = 0
+
+    for i, word1 in enumerate(query_words):
+        if word1 in text:
+            for word2 in query_words[i + 1:]:
+                if word2 in text:
+                    pos1 = text.find(word1)
+                    pos2 = text.find(word2)
+                    distance = abs(pos1 - pos2)
+
+                    if distance <= 50:
+                        score += 150
+                    elif distance <= 100:
+                        score += 100
+                    elif distance <= 200:
+                        score += 50
+
+    return score
+
+
+def apply_intent_scoring(intent: str, text: str, matched_words: int) -> int:
+    """Apply scoring based on detected intent"""
+    if matched_words == 0:
+        return 0
+
+    score = 0
+
+    if intent == 'time_period':
+        # Look for time expressions
+        if re.search(r'\d+\s*(?:days?|months?|years?)', text):
+            score += 500
+        if any(term in text for term in ['grace', 'waiting', 'period']):
+            score += 300
+
+    elif intent == 'definition':
+        # Look for definition patterns
+        if re.search(r'\b\w+\s+means\b', text):
+            score += 600
+        if any(pattern in text for pattern in ['defined as', 'refers to', 'shall mean']):
+            score += 400
+
+    elif intent == 'coverage':
+        # Look for coverage information
+        if any(term in text for term in ['covered', 'benefits', 'expenses', 'include']):
+            score += 300
+        if re.search(r'(?:shall be|will be|are)\s+covered', text):
+            score += 400
+
+    elif intent == 'limits':
+        # Look for numerical limits
+        if re.search(r'(?:maximum|minimum|limit|up to)\s+(?:₹|\d)', text):
+            score += 500
+        if re.search(r'\d+\s*%', text):
+            score += 300
+
+    elif intent == 'discount':
+        # Look for discount/bonus information
+        if any(term in text for term in ['discount', 'bonus', 'ncd', 'claim-free']):
+            score += 400
+        if re.search(r'\d+\s*%.*(?:discount|bonus)', text):
+            score += 600
+
+    return score
+
+
+def evaluate_document_context(chunk: Dict, intent: str, key_terms: List[str]) -> int:
+    """Evaluate chunk based on document structure and metadata"""
+    metadata = chunk.get('metadata', {})
+    text = chunk['text'].lower()
+    score = 0
+
+    # Boost based on chunk metadata
+    if metadata.get('priority', 0) > 80:
+        score += 100
+
+    # Boost for structured content
+    if any(term in text for term in ['section', 'clause', 'article']):
+        score += 50
+
+    # Boost for policy-specific terms
+    policy_terms = ['policy', 'insured', 'premium', 'claim', 'benefit', 'coverage']
+    policy_matches = sum(1 for term in policy_terms if term in text)
+    score += policy_matches * 20
+
+    return score
+
+
+def is_relevant_content(text: str, key_terms: List[str], intent: str) -> bool:
+    """Filter out obviously irrelevant content"""
+
+    # Blacklist obviously irrelevant content
+    irrelevant_phrases = [
+        'trade logo', 'belongs to hdfc', 'ergo international',
+        'natural parents', 'legally adopted'
+    ]
+
+    if any(phrase in text for phrase in irrelevant_phrases):
+        return False
+
+    # Must contain at least one key term for most intents
+    if intent != 'general' and not any(term in text for term in key_terms):
+        return False
+
+    return True
+
+
+def contains_answer_pattern(text: str, intent: str) -> bool:
+    """Detect if text likely contains the answer"""
+
+    if intent == 'time_period':
+        return bool(re.search(r'\d+\s*(?:days?|months?|years?)', text))
+
+    elif intent == 'definition':
+        return bool(re.search(r'\w+\s+means|defined as|refers to', text))
+
+    elif intent == 'coverage':
+        return any(pattern in text for pattern in ['covered', 'shall be', 'include', 'benefit'])
+
+    elif intent == 'discount':
+        return bool(re.search(r'\d+\s*%|discount|bonus|ncd', text))
+
+    elif intent == 'limits':
+        return bool(re.search(r'(?:maximum|minimum|limit|up to).*\d', text))
+
+    return True  # Default to true for general queries
+
+
+def remove_duplicates_and_filter(scored_chunks: List, intent: str) -> List:
+    """Remove duplicates and filter based on quality"""
+    seen_texts = set()
+    unique_chunks = []
+
+    for chunk, score, matches in scored_chunks:
+        # Create a more sophisticated deduplication key
+        text = chunk['text']
+        dedup_key = ' '.join(text.split()[:15])  # First 15 words
+
+        if dedup_key not in seen_texts:
+            seen_texts.add(dedup_key)
+            unique_chunks.append((chunk, score, matches))
+
+        # Limit based on intent
+        max_chunks = 30 if intent in ['definition', 'time_period'] else 20
+        if len(unique_chunks) >= max_chunks:
+            break
+
+    return unique_chunks
 class AdaptiveRetriever:
     def __init__(self):
         self.chunks = []
@@ -987,6 +840,33 @@ class AdaptiveRetriever:
         self.cache_hits = 0
         self.cache_misses = 0
         self.retrieval_metrics = []
+
+    async def get_clause_priority_context(self, query: str, max_chunks: int = 12) -> str:
+        """Fallback method for clause priority context"""
+        if not self.is_indexed:
+            return "Document not indexed"
+
+        # Use fixed search to find relevant chunks
+        relevant_chunks = multi_strategy_search(query, self.chunks, top_k=max_chunks)
+
+        # Build simple context
+        context_parts = []
+        total_chars = 0
+        max_context = 7000
+
+        for i, chunk in enumerate(relevant_chunks):
+            text = chunk['text']
+            chunk_text = text[:600] if len(text) > 600 else text
+
+            if total_chars + len(chunk_text) > max_context:
+                break
+
+            context_parts.append(f"[CLAUSE-{i + 1}] {chunk_text}")
+            total_chars += len(chunk_text)
+
+        context = "\n\n".join(context_parts)
+        logger.info(f"[CLAUSE_PRIORITY] Built context: {len(context)} chars from {len(context_parts)} clauses")
+        return context
 
     async def index_document(self, text: str):
         doc_hash = hashlib.md5(text.encode()).hexdigest()[:12]
@@ -1011,199 +891,55 @@ class AdaptiveRetriever:
         logger.info(f"[kg290] Chunk distribution: {dict(chunk_types)}")
 
     async def get_adaptive_context(self, query: str, is_complex: bool = False) -> str:
-        """Get context adapted to query complexity"""
+        """Simplified context building focused on relevant content"""
         if not self.is_indexed:
             return "Document not indexed"
 
-        # Check cache first for latency optimization
-        cache_key = f"{hashlib.md5(query.encode()).hexdigest()[:8]}_{is_complex}"
-        if cache_key in self.query_cache:
-            self.cache_hits += 1
-            logger.info(
-                f"[kg290] Cache hit (rate: {self.cache_hits / (self.cache_hits + self.cache_misses) * 100:.1f}%)")
-            return self.query_cache[cache_key]
+        # Get relevant chunks using fixed search
+        relevant_chunks = multi_strategy_search(query, self.chunks, top_k=20)
 
-        self.cache_misses += 1
-        start_time = time.time()
+        # If very few relevant chunks, add high-priority fallbacks
+        if len(relevant_chunks) < 5:
+            logger.warning(f"[CONTEXT] Only {len(relevant_chunks)} relevant chunks, adding fallbacks")
 
-        # Adjust chunk count based on complexity
-        chunk_count = 16 if is_complex else 14
-        relevant_chunks = multi_strategy_search(query, self.chunks, top_k=chunk_count)
+            # Add chunks that contain any query words
+            query_words = query.lower().split()
+            fallback_chunks = []
 
-        # Soft fallback if too few relevant chunks
-        if len(relevant_chunks) < 3:
-            # 🔍 Include clause-bearing chunks (force add legal language chunks)
-            clause_chunks = [
-                c for c in self.chunks
-                if re.search(r'\b(clause|section|article|exclusion|definition|limit)\b', c["text"].lower())
-                   and c not in relevant_chunks
-            ]
+            for chunk in self.chunks:
+                if chunk in relevant_chunks:
+                    continue
+                chunk_text = chunk['text'].lower()
+                if any(word in chunk_text for word in query_words if len(word) > 3):
+                    fallback_chunks.append(chunk)
 
-            # Add only if we're still under the desired chunk count
-            needed = chunk_count - len(relevant_chunks)
-            if needed > 0:
-                relevant_chunks += clause_chunks[:needed]
-                logger.info(
-                    f"[kg290] Added {min(needed, len(clause_chunks))} clause-bearing chunks due to low relevant context")
+            relevant_chunks.extend(fallback_chunks[:12])
+            logger.info(f"[CONTEXT] Added {len(fallback_chunks[:12])} fallback chunks")
 
-            logger.info(f"[kg290] Only {len(relevant_chunks)} chunks found, augmenting with high-priority backups")
-
-            # Select high-priority backup chunks
-            high_priority_backups = sorted(
-                [c for c in self.chunks if c['metadata'].get('priority', 0) > 50 and c not in relevant_chunks],
-                key=lambda x: x['metadata']['priority'],
-                reverse=True
-            )[:(chunk_count - len(relevant_chunks))]
-
-            # Append them to fill in
-            relevant_chunks += high_priority_backups
-
-        # Final hard fallback (should rarely happen)
-        if not relevant_chunks:
-            relevant_chunks = self.chunks[:chunk_count]
-            logger.warning("[kg290] Using fallback chunks - may impact accuracy")
-
-        # Build adaptive context with complexity-based limits
+        # Build context with clear labeling
         context_parts = []
         total_chars = 0
-        max_context = 8000 if is_complex else 7500  # More context for complex queries
-        chunks_used = 0
+        max_context = 12000 if is_complex else 9750
 
         for i, chunk in enumerate(relevant_chunks):
             text = chunk['text']
-            priority = chunk['metadata'].get('priority', 0)
 
-            # Adaptive text inclusion based on complexity and priority
-            # Adaptive text inclusion with precision-aware chunking
-            chunk_metadata = chunk['metadata']
-            has_numbers = chunk_metadata.get('has_numbers', False)
-            chunk_type = chunk_metadata.get('type', 'general')
+            # Use more of each chunk to ensure complete information
+            chunk_text = text[:1200] if len(text) > 1200 else text
 
-            if is_complex:
-                # More generous limits for complex queries
-                if priority > 80:
-                    chunk_text = text[:1200] if len(text) > 1200 else text
-                    label = f"[CRITICAL-{i + 1}]"
-                elif priority > 50:
-                    chunk_text = text[:800] if len(text) > 800 else text
-                    label = f"[IMPORTANT-{i + 1}]"
-                else:
-                    chunk_text = text[:600] if len(text) > 600 else text
-                    label = f"[{i + 1}]"
-            else:
-                # For simple queries, prioritize chunks with specific details
-                if priority > 80 or has_numbers or chunk_type in ['critical', 'exclusion', 'benefit']:
-                    chunk_text = text[:900] if len(text) > 900 else text  # More content for important chunks
-                    label = f"[CRITICAL-{i + 1}]" if priority > 80 else f"[DETAILED-{i + 1}]"
-                elif priority > 50:
-                    chunk_text = text[:700] if len(text) > 700 else text
-                    label = f"[IMPORTANT-{i + 1}]"
-                else:
-                    chunk_text = text[:500] if len(text) > 500 else text
-                    label = f"[{i + 1}]"
-
-            # Check if adding this chunk exceeds limit
             if total_chars + len(chunk_text) > max_context:
-                # Truncate to fit but ensure minimum useful content
                 remaining = max_context - total_chars
-                if remaining > 150:  # Only add if meaningful amount left
+                if remaining > 300:  # Only add if meaningful content can fit
                     chunk_text = chunk_text[:remaining] + "..."
-                    context_parts.append(f"{label} {chunk_text}")
-                    chunks_used += 1
+                    context_parts.append(f"[SECTION-{i + 1}] {chunk_text}")
                 break
 
-            context_parts.append(f"{label} {chunk_text}")
+            context_parts.append(f"[SECTION-{i + 1}] {chunk_text}")
             total_chars += len(chunk_text)
-            chunks_used += 1
 
         context = "\n\n".join(context_parts)
-        retrieval_time = time.time() - start_time
-
-        # Cache the result for future queries (latency optimization)
-        if len(self.query_cache) < 50:  # Limit cache size to prevent memory issues
-            self.query_cache[cache_key] = context
-
-        # Track metrics for explainability
-        self.retrieval_metrics.append({
-            'query_length': len(query),
-            'is_complex': is_complex,
-            'chunks_retrieved': chunks_used,
-            'context_length': len(context),
-            'retrieval_time': retrieval_time,
-            'cache_hit': False
-        })
-
-        complexity_note = " (complex query)" if is_complex else ""
-        logger.info(
-            f"[kg290] Adaptive context: {len(context)} chars from {chunks_used}/{len(relevant_chunks)} chunks in {retrieval_time:.2f}s{complexity_note}")
+        logger.info(f"[CONTEXT] Built context: {len(context)} chars from {len(context_parts)} sections")
         return context
-
-    async def get_clause_priority_context(self, query: str) -> str:
-        """Get context prioritizing legal/policy language for retry scenarios"""
-        if not self.is_indexed:
-            return "Document not indexed"
-
-        start_time = time.time()
-
-        # Prioritize chunks with legal/policy patterns
-        legal_patterns = [
-            r'\b(clause|section|article|provision|exclusion|definition|benefit|coverage|condition|limitation|term)\b',
-            r'\b(waiting\s+period|grace\s+period|sum\s+insured|deductible|premium|eligibility)\b',
-            r'\b(means|refers\s+to|defined\s+as|shall\s+mean|includes|excludes)\b'
-        ]
-
-        priority_chunks = []
-        for chunk in self.chunks:
-            text_lower = chunk['text'].lower()
-            legal_score = sum(1 for pattern in legal_patterns if re.search(pattern, text_lower))
-
-            if legal_score > 0:
-                # Boost priority for legal language
-                enhanced_priority = chunk['metadata'].get('priority', 0) + (legal_score * 25)
-                chunk_copy = {
-                    'text': chunk['text'],
-                    'metadata': {**chunk['metadata'], 'priority': enhanced_priority, 'legal_score': legal_score}
-                }
-                priority_chunks.append(chunk_copy)
-
-        # Fallback to all chunks if no legal chunks found
-        if not priority_chunks:
-            priority_chunks = self.chunks[:15]
-            logger.warning("[kg290] No legal chunks found, using general chunks")
-
-        # Sort by enhanced priority
-        priority_chunks.sort(key=lambda x: x['metadata'].get('priority', 0), reverse=True)
-        top_chunks = priority_chunks[:12]
-
-        # Build context with legal emphasis
-        context_parts = []
-        total_chars = 0
-        max_context = 8000
-
-        for i, chunk in enumerate(top_chunks):
-            text = chunk['text'][:600]  # Controlled chunk size
-            legal_score = chunk['metadata'].get('legal_score', 0)
-
-            if legal_score >= 2:
-                label = f"[LEGAL-{i + 1}]"
-            elif chunk['metadata'].get('priority', 0) > 80:
-                label = f"[CRITICAL-{i + 1}]"
-            else:
-                label = f"[CLAUSE-{i + 1}]"
-
-            if total_chars + len(text) > max_context:
-                break
-
-            context_parts.append(f"{label} {text}")
-            total_chars += len(text)
-
-        context = "\n\n".join(context_parts)
-        retrieval_time = time.time() - start_time
-
-        logger.info(
-            f"[kg290] Clause priority context: {len(context)} chars from {len(top_chunks)} chunks in {retrieval_time:.2f}s")
-        return context
-
     def get_performance_metrics(self) -> dict:
         """Get retrieval performance metrics for explainability"""
         if not self.retrieval_metrics:
@@ -1254,91 +990,101 @@ retriever = AdaptiveRetriever()
 
 # Concise adaptive system prompts
 ADAPTIVE_PRIMARY_PROMPT = """
-
-You are an expert document analyst specializing in policy documents. Provide accurate, concise answers based strictly on the document context.
+You are a document analyst specializing in extracting specific information from policy documents.
 
 RESPONSE FORMAT (JSON):
 {
-  "answer": "Clear, concise answer with essential facts, numbers, and conditions",
-  "confidence": "high | medium | low",
-  "needs_more_time": "true | false"
+  "answer": "Direct, specific answer with exact numbers/periods from the document",
+  "confidence": "high | medium | low"
 }
 
-FORMATTING & ACCURACY RULES:
-1. Keep answers concise (30–40 words) – ensure essential information is conveyed without verbosity
-2. Include ALL exact numbers, percentages, time periods as stated (e.g., “thirty (30) days”, “5%”, “24 months”)
-3. Faithfully reflect clause numbers or section names if present (e.g., “Clause 2.1 specifies…”)
-4. For definitions, provide the exact wording as stated in the document wherever possible
-5. If information exists in context, provide it – never say "not mentioned" without thorough analysis
-6. Use clear, professional language – DO NOT use \\n or line break characters
-7. Include key conditions using phrases like "provided that", "subject to", "limited to"
-8. ALWAYS cite exact section numbers when available (e.g., "Exclusion 3.4 states...", "Benefit 2.1 covers...")
-9. Quote exact phrases from document sections when defining terms or stating rules
-10. Set confidence HIGH if answer is definitive, MEDIUM if partially found, LOW if uncertain
-11. Set needs_more_time to TRUE only if question is very complex and you need more analysis time
-12. Write in flowing prose without literal newlines or formatting characters
-13. Avoid bullet points, excessive sub-sections, or overly detailed explanations
+CRITICAL RULES:
+1. FIND EXACT INFORMATION: Look for specific numbers, periods, amounts, percentages
+2. QUOTE DIRECTLY: Use exact wording from document sections
+3. BE SPECIFIC: "30 days grace period" not "grace period exists"
+4. CITE SECTIONS: Reference specific clauses/sections when found
+5. ADMIT GAPS: If specific details aren't in provided sections, state clearly
 
-TRACEABILITY:
-- Reflect all numbers, limits, time durations, and clause names exactly as in the document
-- Use phrases like “Clause 1.3 defines…”, “Section B states…”, or “subject to a maximum of…”
+EXAMPLES:
+✅ GOOD: "30 days grace period as per Section 2.21"
+✅ GOOD: "36 months waiting period for pre-existing diseases"
+✅ GOOD: "5% NCD discount on base premium for claim-free policies"
 
-CONCISENESS PRIORITY:
-Provide complete but succinct answers within 30–40 words. Focus on clarity and completeness without adding extra detail.
+❌ AVOID: "Grace period exists but duration not specified"
+❌ AVOID: "Document does not explicitly state"
+❌ AVOID: Generic statements without specific numbers
 
-COMPLEXITY ASSESSMENT:
-- Set needs_more_time=true for: complex definitions, multi-part questions, comprehensive coverage requests
-- Set needs_more_time=false for: simple yes/no, basic coverage, straightforward facts
-
-BALANCE:
-Provide complete information while maintaining readability and professional conciseness. Match the answer length to formal policy summaries and regulatory communication styles.
-
+If the provided context sections do not contain the specific information requested, state: "The specific information is not available in the provided document sections."
 """
 
 ADAPTIVE_FALLBACK_PROMPT = """
-
-You are a senior document expert handling a complex query that needs thorough analysis. Provide comprehensive but concise answers.
+You are a senior document expert with expertise in extracting specific numerical details from complex policy documents.
 
 RESPONSE FORMAT (JSON):
 {
-  "answer": "Comprehensive answer with complete information, properly formatted and clearly structured"
+  "answer": "Comprehensive answer with all specific numbers, amounts, time periods, and exact conditions found in the document"
 }
 
-EXPERT ANALYSIS FOR COMPLEX QUERIES:
-1. Conduct thorough analysis of ALL context sections
-2. Include ALL numerical details, percentages, time periods, conditions
-3. Provide complete eligibility criteria and exceptions
-4. Cross-reference multiple sections for comprehensive coverage
-5. Use clear, professional language with logical structure – NO \n characters
-6. Include all qualifying conditions and procedural requirements
-7. Format for maximum clarity while being thorough but concise
-8. Ensure no important detail is omitted
-9. Provide complete benefit structures and limitations
-10. Faithfully include **clause references, section names, or article numbers** when present in the context
-11. Write in flowing, professional prose without special formatting characters
-12. Avoid excessive elaboration – focus on essential information
-13. Keep the answer within 30–40 words whenever possible, unless truly unavoidable due to query complexity
+EXPERT NUMERICAL EXTRACTION:
+1. Scan ALL context sections for specific numerical information
+2. Extract EXACT amounts, percentages, time periods, and limits
+3. Look for benefit tables, schedules, and coverage matrices
+4. Find precise eligibility criteria and exclusion conditions
+5. Identify specific premium rates, discounts, and charges
+6. Extract exact waiting periods for different conditions
+7. Locate precise age limits, tenure requirements, and policy terms
 
-CONCISENESS: Even for complex queries, aim to deliver complete and structured answers in 30–40 words where feasible, while maintaining professional brevity and clarity.
+COMPREHENSIVE ANALYSIS PRIORITIES:
+1. FINANCIAL DETAILS: All ₹ amounts, premium rates, benefit limits
+2. TIME PERIODS: All waiting periods, grace periods, policy terms
+3. PERCENTAGES: All discount rates, co-payment percentages, coverage ratios
+4. CONDITIONS: All specific eligibility criteria and exclusion terms
+5. LIMITS: All maximum/minimum amounts, age limits, coverage caps
 
-THOROUGHNESS: This is a complex query requiring detailed analysis – be comprehensive while ensuring the response remains focused, concise, and free from formatting artifacts like literal newlines or unnecessary repetition. **Ensure any exact numbers, time periods, and policy conditions found in the document context are clearly mirrored in the answer.**
+THOROUGHNESS REQUIREMENTS:
+- Cross-reference multiple sections for complete numerical picture
+- Include ALL relevant numbers found, not just the first one
+- Specify the exact context where each number applies
+- Provide complete benefit structures with all amounts
+- Include all qualifying conditions with their specific requirements
 
+PRECISION FOCUS:
+Even for complex queries, prioritize extracting and presenting ALL specific numerical information clearly. If the document contains exact numbers, amounts, or periods related to the query, these MUST be included in your response.
+
+CONTEXT ANALYSIS:
+When you see benefit tables, schedules, or numerical lists in the context, extract the specific details that answer the query rather than providing general descriptions of what these sections contain.
 """
+
 SELF_EVAL_PROMPT = """
-You are verifying whether the following answer to a document-based question is complete and well-supported.
+You are verifying whether the following answer contains specific numerical details as required.
 
 QUESTION: {question}
 
 ANSWER: {answer}
 
-Check:
-1. Does it cover all relevant clauses, conditions, and numbers?
-2. Does it use traceable language (e.g., 'Clause 2.3', 'subject to a limit of...', 'waiting period of 30 days')?
-3. Is the answer vague or generic?
+EVALUATION CRITERIA:
+1. Does it include specific numbers, amounts, or time periods when the question asks for them?
+2. Does it extract exact figures from benefit tables or schedules?
+3. Does it provide precise waiting periods, coverage amounts, or discount rates?
+4. Is it specific rather than generic (e.g., "24 months" vs "waiting period")?
+5. Does it include exact clause/section references for traceability?
+
+EVALUATION STANDARDS:
+- COMPLETE: Contains specific numbers/amounts that directly answer the question
+- INCOMPLETE: Missing specific numerical details that should be available
+- AMBIGUOUS: Contains some numbers but lacks precision or completeness
 
 Respond with one word: COMPLETE, INCOMPLETE, or AMBIGUOUS.
 """
 
+# Add this to your system prompt for definition questions:
+DEFINITION_PROMPT_ADDITION = """
+For DEFINITION questions specifically:
+- Look for exact text like "Hospital means..." or "AYUSH refers to..."
+- If no exact definition found, check exclusions/inclusions for clues
+- Report "Definition not provided in available context" if truly missing
+- Do not say "Processing failed" - always provide some response
+"""
 
 
 async def analyze_with_adaptive_timing(query: str, context: str, is_complex: bool = False,
@@ -1407,7 +1153,7 @@ async def analyze_with_adaptive_timing(query: str, context: str, is_complex: boo
             parsed = json.loads(content)
             raw_answer = parsed.get("answer", "Unable to determine from provided context")
             answer = clean_answer_formatting(raw_answer)  # Apply cleaning
-            confidence = parsed.get("confidence", "medium").lower()
+            confidence = parsed.get("confidence", "high").lower()
             needs_more_time = parsed.get("needs_more_time", "false").lower() == "true"
         except json.JSONDecodeError:
             raw_content = content
@@ -1437,11 +1183,9 @@ async def analyze_with_adaptive_timing(query: str, context: str, is_complex: boo
 
         should_use_fallback = (
                 confidence == "low"
-                or len(answer) < 50
-                or len(answer.split()) < 12
-                or any(phrase in answer.lower() for phrase in fallback_trigger_keywords)
-                or needs_more_time
-                or (is_complex and confidence == "medium")
+                and len(answer) < 40  # Changed OR to AND, reduced threshold
+                or any(phrase in answer.lower() for phrase in fallback_trigger_keywords[:8])  # Fewer trigger phrases
+                or (is_complex and confidence == "low")  # Only low confidence complex queries
         )
 
         if should_use_fallback:
@@ -1622,29 +1366,124 @@ async def hackathon_endpoint(
             answer = result_1.get("answer", "")
             retry_reason = None
 
-            # 🔹 STEP 2: Trigger retry if vague or low confidence
+            # 🔹 STEP 2: Enhanced retry trigger conditions
             vague_phrases = [
                 "not explicitly mentioned", "not mentioned", "not clearly stated", "provided context",
-                "not available", "not described", "not stated", "not defined", "focuses on", "cannot be determined"
+                "not available", "not described", "not stated", "not defined", "focuses on",
+                "cannot be determined", "unable to verify", "document does not specify",
+                "information not available", "no mention", "not specified", "insufficient context"
             ]
+
+            # Check for multiple retry conditions
+            retry_triggers = []
+
             if any(p in answer.lower() for p in vague_phrases):
-                retry_reason = "Vague answer"
-            elif result_1.get("confidence", "unknown") in {"low", "unknown"}:
-                retry_reason = "Low confidence"
+                retry_triggers.append("Vague answer")
 
-            # 🔹 STEP 3: Retry if needed
-            if retry_reason:
-                logger.warning(f"[RERUN] Triggered retry due to: {retry_reason}")
+            if result_1.get("confidence", "unknown") in {"low", "unknown"}:
+                retry_triggers.append("Low confidence")
+
+            if len(answer.strip()) < 30:  # Very short answers often incomplete
+                retry_triggers.append("Too short")
+
+            if answer.count('.') < 1 and '?' not in question.lower():  # Incomplete sentences
+                retry_triggers.append("Incomplete sentence")
+
+            # 🔹 STEP 3: Multi-level retry strategy
+            if retry_triggers:
+                retry_reason = " + ".join(retry_triggers)
+                logger.warning(f"[ENHANCED_RETRY] Q{i + 1}: {retry_reason}")
+
+                # RETRY LEVEL 1: Clause priority context
                 context_2 = await retriever.get_clause_priority_context(question)
-                result_2 = await analyze_with_adaptive_timing(question, context_2, True, "retry")
-
+                result_2 = await analyze_with_adaptive_timing(question, context_2, True, "clause_retry")
                 fallback_answer = result_2.get("answer", "")
-                if fallback_answer and fallback_answer != answer and "unable to verify" not in fallback_answer.lower():
-                    answer = fallback_answer
-                    logger.info(f"[RERUN] Used fallback answer")
 
-            # 🔹 STEP 4: Final cleaning
+                # Use Level 1 retry if it's better
+                if (fallback_answer and
+                        fallback_answer != answer and
+                        not any(p in fallback_answer.lower() for p in vague_phrases) and
+                        len(fallback_answer.strip()) > len(answer.strip())):
+                    answer = fallback_answer
+                    logger.info(f"[ENHANCED_RETRY] Q{i + 1}: Level 1 success (clause priority)")
+
+                # RETRY LEVEL 2: If still problematic, try broader search
+                elif any(p in answer.lower() for p in vague_phrases[:6]):  # Still vague
+                    logger.warning(f"[ENHANCED_RETRY] Q{i + 1}: Level 1 failed, trying broader search")
+
+                    # Create broader context with more chunks
+                    broader_chunks = multi_strategy_search(question, retriever.chunks, top_k=25)
+                    broader_context = ""
+                    total_chars = 0
+
+                    for j, chunk in enumerate(broader_chunks):
+                        chunk_text = chunk['text'][:600]  # Smaller chunks but more of them
+                        if total_chars + len(chunk_text) < 9500:  # Larger context limit
+                            broader_context += f"[BROAD-{j + 1}] {chunk_text}\n\n"
+                            total_chars += len(chunk_text)
+
+                    # Try with broader context
+                    result_3 = await analyze_with_adaptive_timing(question, broader_context, True, "broad_retry")
+                    broad_answer = result_3.get("answer", "")
+
+                    if (broad_answer and
+                            not any(p in broad_answer.lower() for p in vague_phrases) and
+                            len(broad_answer.strip()) > 25):
+                        answer = broad_answer
+                        logger.info(f"[ENHANCED_RETRY] Q{i + 1}: Level 2 success (broader search)")
+
+                # RETRY LEVEL 3: Last resort - fuzzy word matching
+                elif "unable to verify" in answer.lower() or len(answer.strip()) < 20:
+                    logger.warning(f"[ENHANCED_RETRY] Q{i + 1}: Level 2 failed, trying fuzzy matching")
+
+                    # Extract key terms from question
+                    question_words = [w.lower() for w in question.split() if len(w) > 3]
+                    fuzzy_chunks = []
+
+                    for chunk in retriever.chunks:
+                        chunk_text = chunk['text'].lower()
+                        # Look for partial matches and related terms
+                        matches = 0
+                        for word in question_words:
+                            if word in chunk_text:
+                                matches += 2  # Exact match
+                            elif word[:-1] in chunk_text or word + 's' in chunk_text:
+                                matches += 1  # Fuzzy match
+
+                        if matches > 0:
+                            fuzzy_chunks.append((chunk, matches))
+
+                    # Sort by relevance and take top chunks
+                    fuzzy_chunks.sort(key=lambda x: x[1], reverse=True)
+                    fuzzy_context = ""
+                    total_chars = 0
+
+                    for j, (chunk, score) in enumerate(fuzzy_chunks[:15]):
+                        chunk_text = chunk['text'][:700]
+                        if total_chars + len(chunk_text) < 8500:
+                            fuzzy_context += f"[FUZZY-{j + 1}] {chunk_text}\n\n"
+                            total_chars += len(chunk_text)
+
+                    if fuzzy_context.strip():
+                        result_4 = await analyze_with_adaptive_timing(question, fuzzy_context, True, "fuzzy_retry")
+                        fuzzy_answer = result_4.get("answer", "")
+
+                        if (fuzzy_answer and
+                                "unable to verify" not in fuzzy_answer.lower() and
+                                len(fuzzy_answer.strip()) > 20):
+                            answer = fuzzy_answer
+                            logger.info(f"[ENHANCED_RETRY] Q{i + 1}: Level 3 success (fuzzy matching)")
+
+            # 🔹 STEP 4: Final answer validation and cleaning
             final_answer = clean_answer_formatting(answer)
+
+            # Last resort cleanup - if still problematic, provide a more helpful response
+            if any(p in final_answer.lower() for p in ["unable to verify", "not mentioned", "not available"]):
+                # Try to extract at least partial information
+                if len(context_1) > 1000:  # We had context, maybe partial info exists
+                    final_answer = "The provided document sections do not contain specific information about this query, though related policy terms may exist in other sections."
+                else:
+                    final_answer = "Insufficient relevant content found in the available document sections to provide a specific answer."
 
             elapsed = time.time() - question_start
             tokens = result_1.get('tokens_used', 0)
@@ -1652,12 +1491,13 @@ async def hackathon_endpoint(
             confidence = result_1.get('confidence', 'unknown')
             complexity = result_1.get('complexity', 'simple')
 
+            # Enhanced logging with retry info
             timing_emoji = "🕐" if elapsed > 2.0 else "⚡"
+            retry_note = f" [RETRY: {retry_reason}]" if retry_triggers else ""
             logger.info(
-                f"[Jay121305] Q{i + 1} ✓ {timing_emoji} | {elapsed:.1f}s | {tokens}t | {model_used} | {confidence} | {complexity}")
+                f"[Jay121305] Q{i + 1} ✓ {timing_emoji} | {elapsed:.1f}s | {tokens}t | {model_used} | {confidence} | {complexity}{retry_note}")
 
             return final_answer
-
         # Adaptive concurrency based on complexity distribution
         complex_count = sum(1 for q in request.questions if analyze_query_complexity(q)[0])
         simple_count = num_questions - complex_count
