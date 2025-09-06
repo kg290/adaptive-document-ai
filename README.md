@@ -17,8 +17,7 @@ A FastAPI-based document analysis system that uses adaptive AI models to provide
 
 1. **Clone the repository:**
 ```bash
-git clone <repository-url>
-cd document-assistant
+git clone https://github.com/kg290/bajaj-round2
 ```
 
 2. **Install dependencies:**
@@ -48,7 +47,7 @@ The system comes pre-configured with:
 python legal_document_analyser.py
 ```
 
-The server will start on `http://localhost:8000`
+The server will start on `http://127.0.0.1:8000/docs`
 
 ### API Endpoints
 
@@ -166,7 +165,7 @@ critical_patterns = [
 
 ### Check Pool Status
 ```bash
-curl http://localhost:8000/pool-status
+curl http://127.0.0.1:8000/docs/pool-status
 ```
 
 **Response includes:**
