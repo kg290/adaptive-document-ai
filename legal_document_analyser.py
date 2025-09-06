@@ -94,12 +94,12 @@ class AdaptiveKeyPool:
             stats['fallback_tokens_used'] = 0
             stats['requests_made'] = 0
             stats['last_reset'] = now
-            logger.info(f"[Jay121305] Key ...{key[-5:]} tokens reset for new minute")
+            logger.info(f"[SYSTEM] Key ...{key[-5:]} tokens reset for new minute")
 
         if stats['is_cooling'] and now >= stats['cooldown_until']:
             stats['is_cooling'] = False
             stats['consecutive_fails'] = 0
-            logger.info(f"[Jay121305] Key ...{key[-5:]} cooled down and ready")
+            logger.info(f"[SYSTEM] Key ...{key[-5:]} cooled down and ready")
 
     def get_adaptive_key(self, estimated_tokens=1000, use_fallback=False, is_complex=False):
         """Adaptive key selection with complexity awareness"""
@@ -131,7 +131,7 @@ class AdaptiveKeyPool:
                 if tokens_ok and requests_ok:
                     model_name = "Kimi-K2" if use_fallback else "Llama-4-Scout"
                     complexity_note = " (complex)" if is_complex else ""
-                    logger.debug(f"[Jay121305] Selected key ...{key[-5:]} for {model_name}{complexity_note}")
+                    logger.debug(f"[SYSTEM] Selected key ...{key[-5:]} for {model_name}{complexity_note}")
                     return key
 
             # Fallback selection
@@ -162,7 +162,7 @@ class AdaptiveKeyPool:
             if wait_time > 0:
                 model_name = "Kimi-K2" if use_fallback else "Llama-4-Scout"
                 max_wait = 15 if is_complex else 10  # Longer wait for complex queries if needed
-                logger.warning(f"[Jay121305] All keys at {model_name} limit, waiting {wait_time:.1f}s...")
+                logger.warning(f"[SYSTEM] All keys at {model_name} limit, waiting {wait_time:.1f}s...")
                 time.sleep(min(wait_time, max_wait))
                 return self.get_adaptive_key(estimated_tokens, use_fallback, is_complex)
 
@@ -203,7 +203,7 @@ class AdaptiveKeyPool:
             if stats['consecutive_fails'] >= 3:
                 stats['is_cooling'] = True
                 stats['cooldown_until'] = time.time() + 25
-                logger.warning(f"[Jay121305] Key ...{key[-5:]} cooling down (25s)")
+                logger.warning(f"[SYSTEM] Key ...{key[-5:]} cooling down (25s)")
 
     def get_pool_status(self):
         """Get pool status with adaptive metrics"""
@@ -227,14 +227,14 @@ class AdaptiveKeyPool:
             }
 
 
-# Initialize with all 6 keys
+# Initialize with dummy API keys
 groq_keys = [
-    "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",
-    "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",
-    "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",
-    "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",
-    "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",
-    "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"
+    "GROQ_API_KEY_1",
+    "GROQ_API_KEY_2",
+    "GROQ_API_KEY_3",
+    "GROQ_API_KEY_4",
+    "GROQ_API_KEY_5",
+    "GROQ_API_KEY_6"
 ]
 
 groq_pool = AdaptiveKeyPool(groq_keys, primary_tpm=30000, fallback_tpm=10000, rpm_limit=30)
@@ -511,7 +511,7 @@ def comprehensive_document_chunking(text: str, chunk_size: int = 1000) -> List[D
     ), reverse=True)
 
     logger.info(
-        f"[Jay121305] Comprehensive chunking: {len(critical_chunks)} critical + {len(regular_chunks)} regular = {len(unique_chunks)} unique")
+        f"[SYSTEM] Comprehensive chunking: {len(critical_chunks)} critical + {len(regular_chunks)} regular = {len(unique_chunks)} unique")
     return unique_chunks
 
 
@@ -623,11 +623,11 @@ def multi_strategy_search(query: str, chunks: List[Dict], top_k: int = 5) -> Lis
 
     if scored_chunks:
         logger.info(
-            f"[Jay121305] Multi-strategy search: top score = {scored_chunks[0][1]}, found {len(scored_chunks)} relevant chunks")
+            f"[SYSTEM] Multi-strategy search: top score = {scored_chunks[0][1]}, found {len(scored_chunks)} relevant chunks")
         # Log top 3 for debugging
         for i, (chunk, score) in enumerate(scored_chunks[:3]):
             preview = chunk['text'][:100].replace('\n', ' ')
-            logger.debug(f"[Jay121305] Rank {i + 1}: score={score}, text='{preview}...'")
+            logger.debug(f"[SYSTEM] Rank {i + 1}: score={score}, text='{preview}...'")
 
     return [chunk for chunk, _ in scored_chunks[:top_k]]
 
@@ -641,14 +641,14 @@ class AdaptiveRetriever:
     async def index_document(self, text: str):
         doc_hash = hashlib.md5(text.encode()).hexdigest()[:12]
         if self.doc_hash == doc_hash and self.is_indexed:
-            logger.info("[Jay121305] Document already indexed")
+            logger.info("[SYSTEM] Document already indexed")
             return
 
         start = time.time()
         self.chunks = comprehensive_document_chunking(text)
         self.is_indexed = True
         self.doc_hash = doc_hash
-        logger.info(f"[Jay121305] Indexed {len(self.chunks)} chunks in {time.time() - start:.2f}s")
+        logger.info(f"[SYSTEM] Indexed {len(self.chunks)} chunks in {time.time() - start:.2f}s")
 
     async def get_adaptive_context(self, query: str, is_complex: bool = False) -> str:
         """Get context adapted to query complexity"""
@@ -716,7 +716,7 @@ class AdaptiveRetriever:
         context = "\n\n".join(context_parts)
         complexity_note = " (complex query)" if is_complex else ""
         logger.info(
-            f"[Jay121305] Adaptive context: {len(context)} chars from {len(relevant_chunks)} chunks{complexity_note}")
+            f"[SYSTEM] Adaptive context: {len(context)} chars from {len(relevant_chunks)} chunks{complexity_note}")
         return context
 
 
@@ -875,7 +875,7 @@ async def analyze_with_adaptive_timing(query: str, context: str, is_complex: boo
 
         if should_use_fallback:
             complexity_note = f" (complex: {complexity_reason})" if is_complex else ""
-            logger.info(f"[Jay121305] Primary {confidence} confidence{complexity_note}, using adaptive fallback...")
+            logger.info(f"[SYSTEM] Primary {confidence} confidence{complexity_note}, using adaptive fallback...")
 
             try:
                 fallback_key = groq_pool.get_adaptive_key(estimated_tokens, use_fallback=True, is_complex=is_complex)
@@ -912,7 +912,7 @@ async def analyze_with_adaptive_timing(query: str, context: str, is_complex: boo
 
                         if fallback_response.status >= 400:
                             groq_pool.record_failure(fallback_key, f"http_{fallback_response.status}")
-                            logger.warning(f"[Jay121305] Adaptive fallback failed, using primary answer")
+                            logger.warning(f"[SYSTEM] Adaptive fallback failed, using primary answer")
                         else:
                             fallback_result = await fallback_response.json()
                             fallback_tokens_used = fallback_result.get("usage", {}).get("total_tokens",
@@ -934,13 +934,13 @@ async def analyze_with_adaptive_timing(query: str, context: str, is_complex: boo
                                         needs_more_time):
                                     answer = fallback_answer
                                     confidence = "medium"
-                                    logger.info(f"[Jay121305] Using adaptive fallback answer")
+                                    logger.info(f"[SYSTEM] Using adaptive fallback answer")
 
                             except json.JSONDecodeError:
-                                logger.warning(f"[Jay121305] Adaptive fallback JSON parse failed")
+                                logger.warning(f"[SYSTEM] Adaptive fallback JSON parse failed")
 
             except Exception as e:
-                logger.warning(f"[Jay121305] Adaptive fallback failed: {e}")
+                logger.warning(f"[SYSTEM] Adaptive fallback failed: {e}")
 
         model_note = ""
         if is_complex:
@@ -960,7 +960,7 @@ async def analyze_with_adaptive_timing(query: str, context: str, is_complex: boo
         }
 
     except Exception as e:
-        logger.error(f"[Jay121305] Adaptive analysis failed: {str(e)}")
+        logger.error(f"[SYSTEM] Adaptive analysis failed: {str(e)}")
         return {
             "answer": "Analysis failed",
             "success": False,
@@ -970,7 +970,7 @@ async def analyze_with_adaptive_timing(query: str, context: str, is_complex: boo
 
 def extract_pdf_text(pdf_url: str) -> str:
     try:
-        logger.info("[Jay121305] Downloading PDF...")
+        logger.info("[SYSTEM] Downloading PDF...")
         response = requests.get(pdf_url, timeout=90)
         response.raise_for_status()
 
@@ -983,11 +983,11 @@ def extract_pdf_text(pdf_url: str) -> str:
         doc.close()
         os.unlink(temp_path)
 
-        logger.info(f"[Jay121305] Extracted {len(text)} characters")
+        logger.info(f"[SYSTEM] Extracted {len(text)} characters")
         return text
 
     except Exception as e:
-        logger.error(f"[Jay121305] PDF extraction failed: {e}")
+        logger.error(f"[SYSTEM] PDF extraction failed: {e}")
         raise HTTPException(status_code=500, detail=f"PDF extraction error: {e}")
 
 
@@ -1008,8 +1008,7 @@ def root():
         "timing_strategy": "Only increases time when genuinely needed",
         "answer_style": "Professional, concise, clean formatting",
         "keys_available": len(groq_keys),
-        "user": "Jay121305",
-        "timestamp": "2025-07-31 20:27:03"
+        "timestamp": "2025-09-06 19:14:07"
     }
 
 
@@ -1027,7 +1026,7 @@ async def hackathon_endpoint(
         start_time = time.time()
         num_questions = len(request.questions)
         logger.info(
-            f"[Jay121305] CONCISE ADAPTIVE: Processing {num_questions} questions with smart complexity + clean formatting")
+            f"[SYSTEM] CONCISE ADAPTIVE: Processing {num_questions} questions with smart complexity + clean formatting")
 
         pdf_text = extract_pdf_text(request.documents)
         await retriever.index_document(pdf_text)
@@ -1039,7 +1038,7 @@ async def hackathon_endpoint(
             is_complex, complexity_reason = analyze_query_complexity(question)
 
             complexity_indicator = "🔍" if is_complex else "⚡"
-            logger.info(f"[Jay121305] Q{i + 1} {complexity_indicator}: {question[:60]}... [{complexity_reason}]")
+            logger.info(f"[SYSTEM] Q{i + 1} {complexity_indicator}: {question[:60]}... [{complexity_reason}]")
 
             # Adaptive delays - only longer for complex queries
             if is_complex:
@@ -1061,9 +1060,9 @@ async def hackathon_endpoint(
 
                 timing_emoji = "🕐" if elapsed > 2.0 else "⚡"
                 logger.info(
-                    f"[Jay121305] Q{i + 1} ✓ {timing_emoji} | {elapsed:.1f}s | {tokens}t | {model_used} | {confidence} | {complexity}")
+                    f"[SYSTEM] Q{i + 1} ✓ {timing_emoji} | {elapsed:.1f}s | {tokens}t | {model_used} | {confidence} | {complexity}")
             else:
-                logger.error(f"[Jay121305] Q{i + 1} ✗ | {elapsed:.1f}s | {result.get('error', 'unknown')}")
+                logger.error(f"[SYSTEM] Q{i + 1} ✗ | {elapsed:.1f}s | {result.get('error', 'unknown')}")
 
             return result.get("answer", "Analysis failed")
 
@@ -1080,7 +1079,7 @@ async def hackathon_endpoint(
 
         semaphore = asyncio.Semaphore(concurrency)
         logger.info(
-            f"[Jay121305] Adaptive concurrency: {concurrency} | Complex: {complex_count}, Simple: {simple_count}")
+            f"[SYSTEM] Adaptive concurrency: {concurrency} | Complex: {complex_count}, Simple: {simple_count}")
 
         async def limited_process(i, question):
             async with semaphore:
@@ -1095,7 +1094,7 @@ async def hackathon_endpoint(
         for answer in answers:
             if isinstance(answer, Exception):
                 final_answers.append("Processing failed")
-                logger.error(f"[Jay121305] Exception: {answer}")
+                logger.error(f"[SYSTEM] Exception: {answer}")
             else:
                 # Apply final cleaning to all answers
                 cleaned_answer = clean_answer_formatting(str(answer))
@@ -1106,33 +1105,33 @@ async def hackathon_endpoint(
 
         pool_status = groq_pool.get_pool_status()
 
-        logger.info(f"[Jay121305] CONCISE ADAPTIVE COMPLETED")
-        logger.info(f"[Jay121305] ⏱️  Total time: {total_time:.1f}s ({total_time / num_questions:.2f}s per question)")
+        logger.info(f"[SYSTEM] CONCISE ADAPTIVE COMPLETED")
+        logger.info(f"[SYSTEM] ⏱️  Total time: {total_time:.1f}s ({total_time / num_questions:.2f}s per question)")
         logger.info(
-            f"[Jay121305] ✅ Success: {success_count}/{num_questions} ({(success_count / num_questions) * 100:.1f}%)")
-        logger.info(f"[Jay121305] 🎯 Adaptive timing + concise formatting + \\n cleaning applied")
-        logger.info(f"[Jay121305] 📊 Complexity distribution: {complex_count} complex, {simple_count} simple")
+            f"[SYSTEM] ✅ Success: {success_count}/{num_questions} ({(success_count / num_questions) * 100:.1f}%)")
+        logger.info(f"[SYSTEM] 🎯 Adaptive timing + concise formatting + \\n cleaning applied")
+        logger.info(f"[SYSTEM] 📊 Complexity distribution: {complex_count} complex, {simple_count} simple")
         logger.info(
-            f"[Jay121305] 🔧 Model usage: {pool_status['primary_model_usage']}, {pool_status['fallback_model_usage']}")
+            f"[SYSTEM] 🔧 Model usage: {pool_status['primary_model_usage']}, {pool_status['fallback_model_usage']}")
         logger.info(
-            f"[Jay121305] 🔑 Keys: {pool_status['active_keys']}/{pool_status['total_keys']} active | Avg response: {pool_status['avg_response_time']}")
+            f"[SYSTEM] 🔑 Keys: {pool_status['active_keys']}/{pool_status['total_keys']} active | Avg response: {pool_status['avg_response_time']}")
 
         return {"answers": final_answers}
 
     except Exception as e:
-        logger.error(f"[Jay121305] Concise adaptive endpoint failed: {str(e)}")
+        logger.error(f"[SYSTEM] Concise adaptive endpoint failed: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Concise adaptive processing failed: {str(e)}")
 
 
 if __name__ == "__main__":
     import uvicorn
 
-    logger.info("[Jay121305] Starting Concise Adaptive Document Assistant v9.3")
-    logger.info(f"[Jay121305] Smart timing: Only increases time when complexity requires it")
-    logger.info(f"[Jay121305] Concise responses: 60-120 words with clean formatting")
-    logger.info(f"[Jay121305] Auto-cleaning: Removes \\n characters and excessive formatting")
-    logger.info(f"[Jay121305] Performance: Maintains ~1s for simple queries, extends for complex ones")
-    logger.info(f"[Jay121305] Primary: meta-llama/llama-4-scout-17b-16e-instruct (30K TPM)")
-    logger.info(f"[Jay121305] Concise Fallback: moonshotai/kimi-k2-instruct (10K TPM)")
-    logger.info(f"[Jay121305] User: Jay121305 | Time: 2025-07-31 20:27:03")
+    logger.info("[SYSTEM] Starting Concise Adaptive Document Assistant v9.3")
+    logger.info(f"[SYSTEM] Smart timing: Only increases time when complexity requires it")
+    logger.info(f"[SYSTEM] Concise responses: 60-120 words with clean formatting")
+    logger.info(f"[SYSTEM] Auto-cleaning: Removes \\n characters and excessive formatting")
+    logger.info(f"[SYSTEM] Performance: Maintains ~1s for simple queries, extends for complex ones")
+    logger.info(f"[SYSTEM] Primary: meta-llama/llama-4-scout-17b-16e-instruct (30K TPM)")
+    logger.info(f"[SYSTEM] Concise Fallback: moonshotai/kimi-k2-instruct (10K TPM)")
+    logger.info(f"[SYSTEM] Updated: 2025-09-06 19:14:07")
     uvicorn.run(app, host="0.0.0.0", port=8000)
