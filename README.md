@@ -17,7 +17,7 @@ A FastAPI-based document analysis system that uses adaptive AI models to provide
 
 1. **Clone the repository:**
 ```bash
-git clone https://github.com/kg290/bajaj-round2
+git clone https://github.com/kg290/adaptive-document-ai
 ```
 
 2. **Install dependencies:**
