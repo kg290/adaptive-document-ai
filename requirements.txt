@@ -1,62 +1,11 @@
-# FastAPI and ASGI server
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
-
-# HTTP client for async requests
-aiohttp==3.9.1
-
-# PDF processing
-PyMuPDF==1.23.8
-
-# HTTP requests (sync)
-requests==2.31.0
-
-# Data validation and parsing
 pydantic==2.5.0
-
-# Environment variables
-python-dotenv==1.0.0
-
-# CORS middleware (included with FastAPI but explicit for clarity)
 python-multipart==0.0.6
-
-# Additional dependencies that might be needed
-typing-extensions==4.8.0
-anyio==3.7.1
-sniffio==1.3.0
-idna==3.6
-multidict==6.0.4
-yarl==1.9.4
-frozenlist==1.4.0
-aiosignal==1.3.1
-attrs==23.1.0
-certifi==2023.11.17
-charset-normalizer==3.3.2
-urllib3==2.1.0
-
-# NEW DEPENDENCIES FOR v5.py (Jay121305 - 2025-08-03)
-# Natural Language Processing
-nltk==3.8.1
-
-# Keyword extraction for dynamic document analysis
+aiohttp==3.9.1
+requests==2.31.0
+PyMuPDF==1.23.8
+python-dotenv==1.0.0
 yake==0.4.8
-
-# PyTorch for tensor operations (CPU-only lightweight version)
-torch==2.1.0+cpu --find-links https://download.pytorch.org/whl/torch_stable.html
-
-# Enhanced JSON handling
-simplejson==3.19.2
-
-# Scientific computing (often required by ML libraries)
 numpy==1.24.3
-
-# Regular expressions (enhanced version)
-regex==2023.10.3
-
-# Additional NLP utilities
-click==8.1.7
-joblib==1.3.2
-tqdm==4.66.1
-
-# Enhanced text processing
-Unidecode==1.3.7
+scikit-learn==1.3.2
