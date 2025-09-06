@@ -45,7 +45,7 @@ The system comes pre-configured with:
 
 ### Start the Server
 ```bash
-python latestv3.py
+python legal_document_analyser.py
 ```
 
 The server will start on `http://localhost:8000`
